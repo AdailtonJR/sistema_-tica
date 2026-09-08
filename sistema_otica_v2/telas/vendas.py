@@ -192,11 +192,10 @@ class VendasFrame(ctk.CTkFrame):
                 ).pack(side="left", padx=4)
 
     # ==========================================================
-    # VISUALIZAR E CANCELAR VENDAS (COM SENHA DE SUPERVISOR)
+    # CANCELAMENTO DE VENDAS
     # ==========================================================
 
     def pedir_senha_supervisor(self, callback_sucesso):
-        """Abre uma janela modal pedindo a senha do supervisor via banco de dados."""
         janela_senha = ctk.CTkToplevel(self)
         janela_senha.title("Autorização do Supervisor")
         janela_senha.geometry("380x220")
@@ -205,15 +204,11 @@ class VendasFrame(ctk.CTkFrame):
         janela_senha.grab_set()
 
         ctk.CTkLabel(
-            janela_senha, 
-            text="Cancelar Venda", 
-            font=ctk.CTkFont(size=18, weight="bold")
+            janela_senha, text="Cancelar Venda", font=ctk.CTkFont(size=18, weight="bold")
         ).pack(pady=(15, 5))
 
         ctk.CTkLabel(
-            janela_senha, 
-            text="Digite a senha do supervisor para autorizar:",
-            font=ctk.CTkFont(size=12)
+            janela_senha, text="Digite a senha do supervisor para autorizar:", font=ctk.CTkFont(size=12)
         ).pack(pady=(0, 10))
 
         entry_senha = ctk.CTkEntry(janela_senha, show="*", width=220, placeholder_text="Senha do supervisor")
@@ -225,10 +220,8 @@ class VendasFrame(ctk.CTkFrame):
 
             conn = conectar()
             cursor = conn.cursor()
-            
-            # Valida a senha contra a tabela 'usuarios'
             cursor.execute(
-                "SELECT id FROM usuarios WHERE usuario = 'supervisor' AND senha = ? AND ativo = 1",
+                "SELECT id FROM usuarios WHERE (usuario = 'supervisor' OR nivel = 'supervisor') AND senha = ? AND ativo = 1",
                 (senha_digitada,)
             )
             supervisor = cursor.fetchone()
@@ -247,14 +240,12 @@ class VendasFrame(ctk.CTkFrame):
         btn_frame.pack(pady=15)
 
         ctk.CTkButton(
-            btn_frame, text="Confirmar", width=100, 
-            fg_color="#2e7d32", hover_color="#1b5e20",
+            btn_frame, text="Confirmar", width=100, fg_color="#2e7d32", hover_color="#1b5e20",
             command=verificar_e_prosseguir
         ).pack(side="left", padx=5)
 
         ctk.CTkButton(
-            btn_frame, text="Cancelar", width=100, 
-            fg_color="transparent", border_width=1,
+            btn_frame, text="Cancelar", width=100, fg_color="transparent", border_width=1,
             command=janela_senha.destroy
         ).pack(side="left", padx=5)
 
@@ -342,7 +333,7 @@ class VendasFrame(ctk.CTkFrame):
         self.carrinho = []
         janela = ctk.CTkToplevel(self)
         janela.title("Nova Venda")
-        janela.geometry("1000x780")
+        janela.geometry("1000x820")
         janela.transient(self.winfo_toplevel())
         janela.grab_set()
 
@@ -398,26 +389,54 @@ class VendasFrame(ctk.CTkFrame):
         resumo.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
         resumo.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(resumo, text="Desconto:").grid(row=0, column=0, padx=10, pady=8)
+        # DESCONTO
+        ctk.CTkLabel(resumo, text="Desconto (R$):").grid(row=0, column=0, padx=10, pady=6, sticky="w")
         desconto_entry = ctk.CTkEntry(resumo, width=120)
-        desconto_entry.grid(row=0, column=1, sticky="w", padx=10, pady=8)
+        desconto_entry.grid(row=0, column=1, sticky="w", padx=10, pady=6)
         desconto_entry.insert(0, "0")
 
-        ctk.CTkLabel(resumo, text="Forma de pagamento:").grid(row=1, column=0, padx=10, pady=8)
+        # FORMA DE PAGAMENTO
+        ctk.CTkLabel(resumo, text="Forma de pagamento:").grid(row=1, column=0, padx=10, pady=6, sticky="w")
         pagamento = ctk.CTkComboBox(resumo, values=["Dinheiro", "Pix", "Cartão de débito", "Cartão de crédito", "Boleto", "Outro"], width=220)
-        pagamento.grid(row=1, column=1, sticky="w", padx=10, pady=8)
+        pagamento.grid(row=1, column=1, sticky="w", padx=10, pady=6)
         pagamento.set("Pix")
 
-        ctk.CTkLabel(resumo, text="Parcelamento:").grid(row=2, column=0, padx=10, pady=8)
+        # PARCELAMENTO
+        ctk.CTkLabel(resumo, text="Parcelamento:").grid(row=2, column=0, padx=10, pady=6, sticky="w")
         parcelas_combo = ctk.CTkComboBox(resumo, values=[f"{i}x" for i in range(1, 13)], width=120)
-        parcelas_combo.grid(row=2, column=1, sticky="w", padx=10, pady=8)
+        parcelas_combo.grid(row=2, column=1, sticky="w", padx=10, pady=6)
         parcelas_combo.set("1x")
 
+        # CONFIGURAÇÃO DE JUROS (OPCIONAL/MANUAL)
+        juros_var = ctk.BooleanVar(value=False)
+
+        def alternar_juros():
+            if juros_var.get():
+                juros_entry.configure(state="normal")
+            else:
+                juros_entry.configure(state="disabled")
+            atualizar_calculos()
+
+        juros_frame = ctk.CTkFrame(resumo, fg_color="transparent")
+        juros_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=6, sticky="w")
+
+        aplicar_juros_check = ctk.CTkCheckBox(
+            juros_frame, text="Cobrar Juros", variable=juros_var, command=alternar_juros
+        )
+        aplicar_juros_check.pack(side="left", padx=(0, 15))
+
+        ctk.CTkLabel(juros_frame, text="Taxa de Juros (% Total):").pack(side="left", padx=5)
+        juros_entry = ctk.CTkEntry(juros_frame, width=80)
+        juros_entry.insert(0, "2.0")
+        juros_entry.configure(state="disabled")
+        juros_entry.pack(side="left", padx=5)
+
+        # RÓTULOS DE INFORMAÇÕES
         parcela_label = ctk.CTkLabel(resumo, text="")
-        parcela_label.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="w")
+        parcela_label.grid(row=4, column=0, columnspan=2, padx=10, pady=4, sticky="w")
 
         total_label = ctk.CTkLabel(resumo, text="Total: R$ 0,00", font=ctk.CTkFont(size=22, weight="bold"))
-        total_label.grid(row=4, column=0, columnspan=2, padx=10, pady=12, sticky="w")
+        total_label.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="w")
 
         def atualizar_calculos(*args):
             try:
@@ -429,26 +448,33 @@ class VendasFrame(ctk.CTkFrame):
             desconto = max(0.0, min(desconto, subtotal))
             total_sem_juros = subtotal - desconto
 
-            try:
-                parcelas = int(parcelas_combo.get().replace("x", ""))
-            except ValueError:
+            forma_pgto = pagamento.get()
+
+            if forma_pgto != "Cartão de crédito":
+                parcelas_combo.set("1x")
                 parcelas = 1
+            else:
+                try:
+                    parcelas = int(parcelas_combo.get().replace("x", ""))
+                except ValueError:
+                    parcelas = 1
 
             juros_percentual = 0.0
-            if pagamento.get() == "Cartão de crédito":
-                if parcelas >= 4:
-                    juros_percentual = 2.0 * (parcelas - 3)
+            if juros_var.get():
+                try:
+                    juros_percentual = float(juros_entry.get().replace(",", ".") or 0)
+                except ValueError:
+                    juros_percentual = 0.0
 
-                total = round(total_sem_juros * (1 + juros_percentual / 100), 2)
+            total = round(total_sem_juros * (1 + juros_percentual / 100), 2)
+
+            if forma_pgto == "Cartão de crédito":
                 valor_parcela = total / parcelas if parcelas > 0 else total
-
                 if juros_percentual > 0:
-                    parcela_label.configure(text=f"{parcelas}x de {self.moeda(valor_parcela)} | Juros: {juros_percentual:.2f}%")
+                    parcela_label.configure(text=f"{parcelas}x de {self.moeda(valor_parcela)} | Juros inclusos: {juros_percentual:.2f}%")
                 else:
                     parcela_label.configure(text=f"{parcelas}x de {self.moeda(valor_parcela)} | Sem juros")
             else:
-                parcelas_combo.set("1x")
-                total = total_sem_juros
                 parcela_label.configure(text="")
 
             total_label.configure(text=f"Total: {self.moeda(total)}")
@@ -516,9 +542,12 @@ class VendasFrame(ctk.CTkFrame):
                 atualizar_carrinho()
 
         ctk.CTkButton(produto_frame, text="Adicionar", command=adicionar_item).grid(row=0, column=3, padx=10, pady=10)
+
+        # CALLBACKS DE ATUALIZAÇÃO DA TELA
         pagamento.configure(command=lambda e: atualizar_calculos())
         parcelas_combo.configure(command=lambda e: atualizar_calculos())
         desconto_entry.bind("<KeyRelease>", lambda e: atualizar_calculos())
+        juros_entry.bind("<KeyRelease>", lambda e: atualizar_calculos())
 
         botoes = ctk.CTkFrame(janela, fg_color="transparent")
         botoes.grid(row=3, column=0, sticky="ew", padx=25, pady=15)
@@ -541,15 +570,15 @@ class VendasFrame(ctk.CTkFrame):
             subtotal = sum(item["subtotal"] for item in self.carrinho)
             total_sem_juros = max(0.0, subtotal - desconto)
 
-            try:
-                parcelas = int(parcelas_combo.get().replace("x", ""))
-            except ValueError:
-                parcelas = 1
-
             forma_pgto = pagamento.get()
+            parcelas = 1 if forma_pgto != "Cartão de crédito" else int(parcelas_combo.get().replace("x", ""))
+            
             juros_percentual = 0.0
-            if forma_pgto == "Cartão de crédito" and parcelas >= 4:
-                juros_percentual = 2.0 * (parcelas - 3)
+            if juros_var.get():
+                try:
+                    juros_percentual = float(juros_entry.get().replace(",", ".") or 0)
+                except ValueError:
+                    juros_percentual = 0.0
 
             total = round(total_sem_juros * (1 + juros_percentual / 100), 2)
 
@@ -574,15 +603,26 @@ class VendasFrame(ctk.CTkFrame):
                         UPDATE produtos SET estoque = estoque - ? WHERE id = ?
                     """, (item["quantidade"], item["produto_id"]))
 
-                valor_parcela = round(total / parcelas, 2)
+                # CONTAS A RECEBER
                 data_atual = datetime.now()
-
-                for i in range(1, parcelas + 1):
-                    vencimento = (data_atual + timedelta(days=30 * i)).strftime("%Y-%m-%d")
+                
+                if forma_pgto in ["Dinheiro", "Pix", "Cartão de débito"] or (forma_pgto != "Cartão de crédito" and parcelas == 1):
                     cursor.execute("""
-                        INSERT INTO contas_receber (venda_id, cliente_id, parcela, total_parcelas, valor, vencimento, status)
-                        VALUES (?, ?, ?, ?, ?, ?, 'Pendente')
-                    """, (venda_id, cliente_id, i, parcelas, valor_parcela, vencimento))
+                        INSERT INTO contas_receber (venda_id, cliente_id, parcela, total_parcelas, valor, vencimento, pagamento, data_pagamento, status)
+                        VALUES (?, ?, 1, 1, ?, ?, ?, CURRENT_TIMESTAMP, 'Pago')
+                    """, (venda_id, cliente_id, total, data_atual.strftime("%Y-%m-%d"), forma_pgto))
+                else:
+                    valor_base = round(total / parcelas, 2)
+                    diferenca_centavos = round(total - (valor_base * parcelas), 2)
+
+                    for i in range(1, parcelas + 1):
+                        vencimento = (data_atual + timedelta(days=30 * i)).strftime("%Y-%m-%d")
+                        valor_parcela = valor_base + diferenca_centavos if i == parcelas else valor_base
+                        
+                        cursor.execute("""
+                            INSERT INTO contas_receber (venda_id, cliente_id, parcela, total_parcelas, valor, vencimento, status)
+                            VALUES (?, ?, ?, ?, ?, ?, 'Pendente')
+                        """, (venda_id, cliente_id, i, parcelas, valor_parcela, vencimento))
 
                 conn.commit()
                 messagebox.showinfo("Sucesso", "Venda realizada com sucesso!", parent=janela)
