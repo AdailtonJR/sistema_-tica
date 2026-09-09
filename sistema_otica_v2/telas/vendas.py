@@ -13,7 +13,7 @@ class VendasFrame(ctk.CTkFrame):
         super().__init__(master)
         self.voltar = voltar
         self.carrinho = []
-        # Corrigido: Garantir a criação/migração das colunas ANTES de montar a tela
+        # Garante a criação e migração de todas as tabelas e colunas antes de montar a tela
         self.criar_tabelas()
         self.montar_tela()
 
@@ -25,6 +25,7 @@ class VendasFrame(ctk.CTkFrame):
         conn = conectar()
         cursor = conn.cursor()
 
+        # 1. Tabela de Vendas
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS vendas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,15 +48,16 @@ class VendasFrame(ctk.CTkFrame):
             )
         """)
 
-        # Garantir adição das colunas tipo_cartao e bandeira_cartao caso o banco já existisse
+        # Verificação e migração dinâmica para a tabela de vendas
         cursor.execute("PRAGMA table_info(vendas);")
-        colunas_existentes = [coluna[1] for coluna in cursor.fetchall()]
+        colunas_vendas = [coluna[1] for coluna in cursor.fetchall()]
 
-        if "tipo_cartao" not in colunas_existentes:
+        if "tipo_cartao" not in colunas_vendas:
             cursor.execute("ALTER TABLE vendas ADD COLUMN tipo_cartao TEXT;")
-        if "bandeira_cartao" not in colunas_existentes:
+        if "bandeira_cartao" not in colunas_vendas:
             cursor.execute("ALTER TABLE vendas ADD COLUMN bandeira_cartao TEXT;")
 
+        # 2. Tabela de Vendas Itens
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS vendas_itens (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +69,7 @@ class VendasFrame(ctk.CTkFrame):
             )
         """)
 
+        # 3. Tabela de Contas a Receber
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS contas_receber (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +85,13 @@ class VendasFrame(ctk.CTkFrame):
                 observacoes TEXT
             )
         """)
+
+        # 4. CORREÇÃO DO ERRO: Garantir que a coluna 'nivel' exista na tabela 'usuarios'
+        cursor.execute("PRAGMA table_info(usuarios);")
+        colunas_usuarios = [coluna[1] for coluna in cursor.fetchall()]
+
+        if colunas_usuarios and "nivel" not in colunas_usuarios:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN nivel TEXT DEFAULT 'Atendente';")
 
         conn.commit()
         conn.close()
@@ -137,7 +147,6 @@ class VendasFrame(ctk.CTkFrame):
                 self.after(0, lambda: messagebox.showerror("Erro", "Venda não encontrada para impressão."))
                 return
 
-            # Formatação no padrão de comprovante não-fiscal (40 colunas)
             largura = 40
             div = "-" * largura
 
@@ -185,13 +194,10 @@ class VendasFrame(ctk.CTkFrame):
                 temp_file.write(texto_cupom)
                 temp_file.close()
 
-                # Tenta enviar diretamente para a impressora padrão
                 os.startfile(temp_file.name, "print")
             except Exception:
-                # Fallback seguro: abre o arquivo de texto para impressão manual caso não haja impressora padrão configurada
                 os.startfile(temp_file.name)
 
-        # Roda em thread separada para não travar nem quebrar a GIL do Tkinter
         threading.Thread(target=_executar_impressao, daemon=True).start()
 
     # ==========================================================
@@ -323,12 +329,23 @@ class VendasFrame(ctk.CTkFrame):
 
             conn = conectar()
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM usuarios WHERE (usuario = 'supervisor' OR nivel = 'supervisor') AND senha = ? AND ativo = 1",
-                (senha_digitada,)
-            )
-            supervisor = cursor.fetchone()
-            conn.close()
+
+            try:
+                # Consulta segura tolerante à existência da coluna 'nivel'
+                cursor.execute(
+                    "SELECT id FROM usuarios WHERE (usuario = 'supervisor' OR nivel = 'supervisor') AND senha = ? AND ativo = 1",
+                    (senha_digitada,)
+                )
+                supervisor = cursor.fetchone()
+            except Exception:
+                # Fallback caso a tabela usuarios tenha uma variação de estrutura
+                cursor.execute(
+                    "SELECT id FROM usuarios WHERE usuario = 'supervisor' AND senha = ? AND ativo = 1",
+                    (senha_digitada,)
+                )
+                supervisor = cursor.fetchone()
+            finally:
+                conn.close()
 
             if supervisor:
                 janela_senha.destroy()
