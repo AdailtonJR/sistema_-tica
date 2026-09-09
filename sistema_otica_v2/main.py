@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from database import inicializar_banco
 from telas.login import LoginFrame
+from backup import realizar_backup_sqlite
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -12,7 +13,13 @@ class SistemaOtica(ctk.CTk):
         self.geometry("1200x750")
         self.minsize(1000, 650)
 
+        # 1. Inicializa o banco e as tabelas
         inicializar_banco()
+
+        # 2. Executa o backup automático do banco na inicialização com aviso na tela
+        realizar_backup_sqlite(db_path="sistema_otica.db", max_backups=10)
+
+        # 3. Abre a tela de login
         self.mostrar_login()
 
     def limpar(self):
