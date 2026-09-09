@@ -1,6 +1,9 @@
 import customtkinter as ctk
 from tkinter import messagebox
 from datetime import datetime, timedelta
+import os
+import tempfile
+import threading
 from database import conectar
 
 
@@ -10,6 +13,7 @@ class VendasFrame(ctk.CTkFrame):
         super().__init__(master)
         self.voltar = voltar
         self.carrinho = []
+        # Corrigido: Garantir a criação/migração das colunas ANTES de montar a tela
         self.criar_tabelas()
         self.montar_tela()
 
@@ -31,6 +35,8 @@ class VendasFrame(ctk.CTkFrame):
                 total REAL DEFAULT 0,
                 entrada REAL DEFAULT 0,
                 forma_pagamento TEXT,
+                tipo_cartao TEXT,
+                bandeira_cartao TEXT,
                 observacoes TEXT,
                 parcelas INTEGER DEFAULT 1,
                 status TEXT DEFAULT 'Concluída',
@@ -40,6 +46,15 @@ class VendasFrame(ctk.CTkFrame):
                 total_sem_juros REAL DEFAULT 0
             )
         """)
+
+        # Garantir adição das colunas tipo_cartao e bandeira_cartao caso o banco já existisse
+        cursor.execute("PRAGMA table_info(vendas);")
+        colunas_existentes = [coluna[1] for coluna in cursor.fetchall()]
+
+        if "tipo_cartao" not in colunas_existentes:
+            cursor.execute("ALTER TABLE vendas ADD COLUMN tipo_cartao TEXT;")
+        if "bandeira_cartao" not in colunas_existentes:
+            cursor.execute("ALTER TABLE vendas ADD COLUMN bandeira_cartao TEXT;")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS vendas_itens (
@@ -90,6 +105,94 @@ class VendasFrame(ctk.CTkFrame):
         linhas = cursor.fetchall()
         conn.close()
         return [{"id": l[0], "nome": l[1], "preco": l[2], "estoque": l[3]} for l in linhas]
+
+    # ==========================================================
+    # IMPRESSÃO DE COMPROVANTE (SEGURA CONTRA ERROS DE GIL)
+    # ==========================================================
+
+    def imprimir_comprovante(self, venda_id):
+        def _executar_impressao():
+            conn = conectar()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT v.id, c.nome, c.cpf, v.data, v.forma_pagamento, v.parcelas, 
+                       v.subtotal, v.desconto, v.total, v.tipo_cartao, v.bandeira_cartao
+                FROM vendas v
+                LEFT JOIN clientes c ON c.id = v.cliente_id
+                WHERE v.id = ?
+            """, (venda_id,))
+            venda = cursor.fetchone()
+
+            cursor.execute("""
+                SELECT p.nome, i.quantidade, i.preco_unitario, i.subtotal
+                FROM vendas_itens i
+                JOIN produtos p ON p.id = i.produto_id
+                WHERE i.venda_id = ?
+            """, (venda_id,))
+            itens = cursor.fetchall()
+            conn.close()
+
+            if not venda:
+                self.after(0, lambda: messagebox.showerror("Erro", "Venda não encontrada para impressão."))
+                return
+
+            # Formatação no padrão de comprovante não-fiscal (40 colunas)
+            largura = 40
+            div = "-" * largura
+
+            cupom = []
+            cupom.append("          COMPROVANTE DE VENDA          ".center(largura))
+            cupom.append(div)
+            cupom.append(f"Venda: #{venda[0]}")
+            cupom.append(f"Data:  {venda[3] or datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            cupom.append(f"Cliente: {venda[1] or 'Consumidor Final'}")
+            if venda[2]:
+                cupom.append(f"CPF: {venda[2]}")
+            cupom.append(div)
+            cupom.append(f"{'QTD x ITEM':<24} {'VALOR':>14}")
+            cupom.append(div)
+
+            for item in itens:
+                nome_p, qtd, preco_u, sub = item
+                nome_p = (nome_p[:22] + "..") if len(nome_p) > 24 else nome_p
+                cupom.append(f"{nome_p}")
+                cupom.append(f"  {qtd} x {self.moeda(preco_u):<12} {self.moeda(sub):>18}")
+
+            cupom.append(div)
+            cupom.append(f"{'Subtotal:':<20} {self.moeda(venda[6]):>19}")
+            if venda[7] and venda[7] > 0:
+                cupom.append(f"{'Desconto:':<20} {self.moeda(venda[7]):>19}")
+            cupom.append(f"{'TOTAL:':<20} {self.moeda(venda[8]):>19}")
+            cupom.append(div)
+
+            info_pgto = f"Forma Pgto: {venda[4]}"
+            if venda[5] and venda[5] > 1:
+                info_pgto += f" ({venda[5]}x)"
+            cupom.append(info_pgto)
+
+            if venda[9] or venda[10]:
+                cupom.append(f"Cartao: {venda[9] or ''} {venda[10] or ''}".strip())
+
+            cupom.append(div)
+            cupom.append("       Obrigado pela preferencia!       ".center(largura))
+            cupom.append("\n\n")
+
+            texto_cupom = "\n".join(cupom)
+
+            try:
+                temp_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8")
+                temp_file.write(texto_cupom)
+                temp_file.close()
+
+                # Tenta enviar diretamente para a impressora padrão
+                os.startfile(temp_file.name, "print")
+            except Exception:
+                # Fallback seguro: abre o arquivo de texto para impressão manual caso não haja impressora padrão configurada
+                os.startfile(temp_file.name)
+
+        # Roda em thread separada para não travar nem quebrar a GIL do Tkinter
+        threading.Thread(target=_executar_impressao, daemon=True).start()
 
     # ==========================================================
     # TELA PRINCIPAL DE VENDAS
@@ -169,7 +272,7 @@ class VendasFrame(ctk.CTkFrame):
 
             qtd_parcelas = parcelas or 1
             pagamento = forma_pagamento or "-"
-            if pagamento == "Cartão de crédito" and qtd_parcelas > 1:
+            if pagamento in ["Cartão de crédito", "Cartão"] and qtd_parcelas > 1:
                 pagamento = f"Crédito {qtd_parcelas}x"
 
             ctk.CTkLabel(info_frame, text=pagamento).pack(side="left", padx=10)
@@ -280,14 +383,14 @@ class VendasFrame(ctk.CTkFrame):
     def ver_venda(self, venda_id):
         janela = ctk.CTkToplevel(self)
         janela.title(f"Detalhes da Venda #{venda_id}")
-        janela.geometry("600x500")
+        janela.geometry("600x580")
         janela.transient(self.winfo_toplevel())
 
         conn = conectar()
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT v.id, c.nome, v.data, v.forma_pagamento, v.parcelas, v.total, v.status
+            SELECT v.id, c.nome, v.data, v.forma_pagamento, v.parcelas, v.total, v.status, v.tipo_cartao, v.bandeira_cartao
             FROM vendas v
             LEFT JOIN clientes c ON c.id = v.cliente_id
             WHERE v.id = ?
@@ -311,7 +414,11 @@ class VendasFrame(ctk.CTkFrame):
         ctk.CTkLabel(janela, text=f"Venda #{venda[0]}", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
         ctk.CTkLabel(janela, text=f"Cliente: {venda[1] or 'N/A'}").pack(anchor="w", padx=20)
         ctk.CTkLabel(janela, text=f"Data: {venda[2] or '-'}").pack(anchor="w", padx=20)
-        ctk.CTkLabel(janela, text=f"Forma de Pagamento: {venda[3]} ({venda[4]}x)").pack(anchor="w", padx=20)
+        
+        info_pgto = f"Forma de Pagamento: {venda[3]} ({venda[4]}x)"
+        if venda[7] or venda[8]:
+            info_pgto += f" - {venda[7] or ''} {venda[8] or ''}"
+        ctk.CTkLabel(janela, text=info_pgto).pack(anchor="w", padx=20)
 
         lista_itens = ctk.CTkScrollableFrame(janela, height=200)
         lista_itens.pack(fill="both", expand=True, padx=20, pady=10)
@@ -325,6 +432,11 @@ class VendasFrame(ctk.CTkFrame):
 
         ctk.CTkLabel(janela, text=f"Total: {self.moeda(venda[5])}", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
 
+        ctk.CTkButton(
+            janela, text="Imprimir Comprovante", 
+            command=lambda: self.imprimir_comprovante(venda_id)
+        ).pack(pady=(0, 15))
+
     # ==========================================================
     # JANELA DE NOVA VENDA
     # ==========================================================
@@ -333,7 +445,7 @@ class VendasFrame(ctk.CTkFrame):
         self.carrinho = []
         janela = ctk.CTkToplevel(self)
         janela.title("Nova Venda")
-        janela.geometry("1000x820")
+        janela.geometry("1000x850")
         janela.transient(self.winfo_toplevel())
         janela.grab_set()
 
@@ -401,13 +513,27 @@ class VendasFrame(ctk.CTkFrame):
         pagamento.grid(row=1, column=1, sticky="w", padx=10, pady=6)
         pagamento.set("Pix")
 
+        # DETALHES DO CARTÃO (TIPO E BANDEIRA)
+        cartao_frame = ctk.CTkFrame(resumo, fg_color="transparent")
+        cartao_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=4, sticky="w")
+
+        ctk.CTkLabel(cartao_frame, text="Tipo:").pack(side="left", padx=(0, 5))
+        tipo_cartao_combo = ctk.CTkComboBox(cartao_frame, values=["Crédito", "Débito"], width=110)
+        tipo_cartao_combo.pack(side="left", padx=(0, 15))
+        tipo_cartao_combo.set("Crédito")
+
+        ctk.CTkLabel(cartao_frame, text="Bandeira:").pack(side="left", padx=(0, 5))
+        bandeira_combo = ctk.CTkComboBox(cartao_frame, values=["Visa", "Mastercard", "Elo", "Hipercard", "Amex", "Outra"], width=120)
+        bandeira_combo.pack(side="left")
+        bandeira_combo.set("Visa")
+
         # PARCELAMENTO
-        ctk.CTkLabel(resumo, text="Parcelamento:").grid(row=2, column=0, padx=10, pady=6, sticky="w")
+        ctk.CTkLabel(resumo, text="Parcelamento:").grid(row=3, column=0, padx=10, pady=6, sticky="w")
         parcelas_combo = ctk.CTkComboBox(resumo, values=[f"{i}x" for i in range(1, 13)], width=120)
-        parcelas_combo.grid(row=2, column=1, sticky="w", padx=10, pady=6)
+        parcelas_combo.grid(row=3, column=1, sticky="w", padx=10, pady=6)
         parcelas_combo.set("1x")
 
-        # CONFIGURAÇÃO DE JUROS (OPCIONAL/MANUAL)
+        # CONFIGURAÇÃO DE JUROS
         juros_var = ctk.BooleanVar(value=False)
 
         def alternar_juros():
@@ -418,7 +544,7 @@ class VendasFrame(ctk.CTkFrame):
             atualizar_calculos()
 
         juros_frame = ctk.CTkFrame(resumo, fg_color="transparent")
-        juros_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=6, sticky="w")
+        juros_frame.grid(row=4, column=0, columnspan=2, padx=10, pady=6, sticky="w")
 
         aplicar_juros_check = ctk.CTkCheckBox(
             juros_frame, text="Cobrar Juros", variable=juros_var, command=alternar_juros
@@ -433,10 +559,10 @@ class VendasFrame(ctk.CTkFrame):
 
         # RÓTULOS DE INFORMAÇÕES
         parcela_label = ctk.CTkLabel(resumo, text="")
-        parcela_label.grid(row=4, column=0, columnspan=2, padx=10, pady=4, sticky="w")
+        parcela_label.grid(row=5, column=0, columnspan=2, padx=10, pady=4, sticky="w")
 
         total_label = ctk.CTkLabel(resumo, text="Total: R$ 0,00", font=ctk.CTkFont(size=22, weight="bold"))
-        total_label.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        total_label.grid(row=6, column=0, columnspan=2, padx=10, pady=10, sticky="w")
 
         def atualizar_calculos(*args):
             try:
@@ -449,6 +575,15 @@ class VendasFrame(ctk.CTkFrame):
             total_sem_juros = subtotal - desconto
 
             forma_pgto = pagamento.get()
+
+            if "Cartão" in forma_pgto:
+                cartao_frame.grid()
+                if forma_pgto == "Cartão de débito":
+                    tipo_cartao_combo.set("Débito")
+                elif forma_pgto == "Cartão de crédito":
+                    tipo_cartao_combo.set("Crédito")
+            else:
+                cartao_frame.grid_remove()
 
             if forma_pgto != "Cartão de crédito":
                 parcelas_combo.set("1x")
@@ -543,7 +678,6 @@ class VendasFrame(ctk.CTkFrame):
 
         ctk.CTkButton(produto_frame, text="Adicionar", command=adicionar_item).grid(row=0, column=3, padx=10, pady=10)
 
-        # CALLBACKS DE ATUALIZAÇÃO DA TELA
         pagamento.configure(command=lambda e: atualizar_calculos())
         parcelas_combo.configure(command=lambda e: atualizar_calculos())
         desconto_entry.bind("<KeyRelease>", lambda e: atualizar_calculos())
@@ -573,6 +707,9 @@ class VendasFrame(ctk.CTkFrame):
             forma_pgto = pagamento.get()
             parcelas = 1 if forma_pgto != "Cartão de crédito" else int(parcelas_combo.get().replace("x", ""))
             
+            tipo_cartao = tipo_cartao_combo.get() if "Cartão" in forma_pgto else None
+            bandeira_cartao = bandeira_combo.get() if "Cartão" in forma_pgto else None
+
             juros_percentual = 0.0
             if juros_var.get():
                 try:
@@ -587,9 +724,9 @@ class VendasFrame(ctk.CTkFrame):
 
             try:
                 cursor.execute("""
-                    INSERT INTO vendas (cliente_id, subtotal, desconto, total, forma_pagamento, parcelas, juros_percentual, total_sem_juros)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (cliente_id, subtotal, desconto, total, forma_pgto, parcelas, juros_percentual, total_sem_juros))
+                    INSERT INTO vendas (cliente_id, subtotal, desconto, total, forma_pagamento, tipo_cartao, bandeira_cartao, parcelas, juros_percentual, total_sem_juros)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (cliente_id, subtotal, desconto, total, forma_pgto, tipo_cartao, bandeira_cartao, parcelas, juros_percentual, total_sem_juros))
 
                 venda_id = cursor.lastrowid
 
@@ -625,9 +762,11 @@ class VendasFrame(ctk.CTkFrame):
                         """, (venda_id, cliente_id, i, parcelas, valor_parcela, vencimento))
 
                 conn.commit()
-                messagebox.showinfo("Sucesso", "Venda realizada com sucesso!", parent=janela)
                 janela.destroy()
                 self.carregar_vendas()
+
+                if messagebox.askyesno("Imprimir Comprovante", f"Venda #{venda_id} realizada com sucesso!\nDeseja imprimir o comprovante?", parent=self):
+                    self.imprimir_comprovante(venda_id)
 
             except Exception as err:
                 conn.rollback()
